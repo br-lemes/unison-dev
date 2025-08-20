@@ -4,8 +4,14 @@
     "words": [
         "blockdevices",
         "GLOB_ONLYDIR",
+        "libnotify",
+        "linux",
         "mountpoint",
+        "pacman",
         "pkexec",
+        "policykit",
+        "polkit",
+        "udisks2",
         "udisksctl",
         "XAUTHORITY",
         "zenity"
