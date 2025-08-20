@@ -1,0 +1,19 @@
+{
+    "jsxSingleQuote": true,
+    "objectWrap": "collapse",
+    "overrides": [
+        {
+            "files": ["*.md"],
+            "options": {
+                "embeddedLanguageFormatting": "off",
+                "proseWrap": "always",
+                "tabWidth": 2
+            }
+        }
+    ],
+    "phpVersion": "8.2",
+    "plugins": ["@prettier/plugin-php"],
+    "printWidth": 80,
+    "singleQuote": true,
+    "tabWidth": 4
+}

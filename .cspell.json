@@ -1,0 +1,13 @@
+{
+    "import": ["@cspell/dict-pt-br/cspell-ext.json"],
+    "language": "en,pt-br",
+    "words": [
+        "blockdevices",
+        "GLOB_ONLYDIR",
+        "mountpoint",
+        "pkexec",
+        "udisksctl",
+        "XAUTHORITY",
+        "zenity"
+    ]
+}
