@@ -9,7 +9,7 @@ function arrayToList(array $devices): string
     $result = '';
     foreach ($devices as $index => $device) {
         $result .= "$index ";
-        foreach (['model', 'serial', 'label'] as $key) {
+        foreach (['model', 'serial'] as $key) {
             $result .= escapeshellarg($device[$key]) . ' ';
         }
         $result .= ' ';
@@ -20,7 +20,7 @@ function arrayToList(array $devices): string
 function chooseDevice(array $devices): array
 {
     $list = arrayToList($devices);
-    $column = '--column=ID --column=Modelo --column=Serial --column=Label';
+    $column = '--column=ID --column=Modelo --column=Serial';
     $title = '--title=Dispositivos';
     $text = '--text="Selecione um dispositivo"';
     $command = "zenity --list $title $text $column $list";
@@ -57,7 +57,7 @@ function getDevices(): array
 
 function getMatchingDevices(): array
 {
-    $profiles = array_merge(getProfiles(true), getProfiles(false));
+    $profiles = getProfiles();
     $devices = getDevices();
     $result = [];
     foreach ($profiles as $profile) {
@@ -73,7 +73,7 @@ function getMatchingDevices(): array
                     if ($child['mountpoint'] === '/') {
                         continue;
                     }
-                    if ($child['label'] === $profile['label']) {
+                    if ($child['label'] === 'NIXROOT') {
                         $profile['mountpoint'] = $child['mountpoint'];
                         $profile['path'] = $child['path'];
                         $result[] = $profile;
@@ -81,7 +81,7 @@ function getMatchingDevices(): array
                 }
                 continue;
             }
-            if ($device['label'] !== $profile['label']) {
+            if ($device['label'] !== 'NIXROOT') {
                 continue;
             }
             if ($device['mountpoint'] === '/') {
@@ -95,22 +95,20 @@ function getMatchingDevices(): array
     return $result;
 }
 
-function getProfiles(bool $root): array
+function getProfiles(): array
 {
     global $home;
-    $path = "$home/.config/unison/" . ($root ? 'root' : 'user');
+    $path = "$home/.config/unison/nixos";
     $profiles = [];
-    foreach (glob("$path/*/*/*", GLOB_ONLYDIR) as $dir) {
+    foreach (glob("$path/*/*", GLOB_ONLYDIR) as $dir) {
         $parts = explode('/', $dir);
         $count = count($parts);
-        if ($count < 3) {
+        if ($count < 2) {
             continue;
         }
         $profiles[] = [
-            'label' => $parts[$count - 1],
-            'model' => $parts[$count - 3],
-            'root' => $root,
-            'serial' => $parts[$count - 2],
+            'model' => $parts[$count - 2],
+            'serial' => $parts[$count - 1],
         ];
     }
     return $profiles;
@@ -128,10 +126,91 @@ function notify(string $message): void
     shell_exec("notify-send $message");
 }
 
+function manageBindMounts(string $mountpoint, bool $mount): void
+{
+    global $home;
+    $pairs = [
+        [
+            '/etc/NetworkManager/system-connections/',
+            "$home/src/system-connections/",
+        ],
+        [
+            rtrim($mountpoint, '/') . '/etc/NetworkManager/system-connections/',
+            rtrim($mountpoint, '/') . "$home/src/system-connections/",
+        ],
+    ];
+
+    foreach ($pairs as [$src, $dst]) {
+        if (!is_dir($src) || !is_dir($dst)) {
+            continue;
+        }
+
+        $isMounted = shell_exec(
+            'mountpoint -q ' . escapeshellarg($dst) . ' && echo 1 || echo 0',
+        );
+        if ($mount && trim($isMounted) === '0') {
+            shell_exec(
+                "pkexec mount --bind -o 'X-mount.idmap=b:0:1000:1' " .
+                    escapeshellarg($src) .
+                    ' ' .
+                    escapeshellarg($dst),
+            );
+        }
+        if (!$mount && trim($isMounted) === '1') {
+            shell_exec('pkexec umount ' . escapeshellarg($dst));
+        }
+    }
+}
+
+function fscryptUnlock(string $mountpoint)
+{
+    global $home;
+    $targetDir = rtrim($mountpoint, '/') . $home;
+    if (!is_dir($targetDir)) {
+        return;
+    }
+    $targetDir = escapeshellarg($targetDir);
+    exec("fscrypt status $targetDir 2>&1", $output, $statusCode);
+    if ($statusCode !== 0) {
+        return;
+    }
+
+    $notUnlocked = "O diretório $targetDir não foi desbloqueado.";
+
+    $title = "--title='Desbloqueio fscrypt'";
+    $message = "--text='Insira sua senha para desbloquear $targetDir'";
+    $command = "zenity --password $title $message";
+    $password = shell_exec($command);
+    if ($password === null) {
+        error($notUnlocked);
+        return;
+    }
+    $password = trim($password);
+    if ($password === '') {
+        error($notUnlocked);
+        return;
+    }
+
+    $command = "fscrypt unlock $targetDir";
+    $descSpec = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+    $process = proc_open($command, $descSpec, $pipes);
+    if (!is_resource($process)) {
+        error($notUnlocked);
+        return;
+    }
+    fwrite($pipes[0], $password . "\n");
+    fclose($pipes[0]);
+    stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    stream_get_contents($pipes[2]);
+    fclose($pipes[2]);
+    proc_close($process);
+}
+
 function unison(array $device): void
 {
     global $home;
-    $profilePath = "{$device['model']}/{$device['serial']}/{$device['label']}";
+    $profilePath = "{$device['model']}/{$device['serial']}";
     notify($profilePath);
     if ($device['mountpoint'] === null) {
         $mount = shell_exec("udisksctl mount -b {$device['path']}");
@@ -139,20 +218,26 @@ function unison(array $device): void
             error('Failed to mount device.');
             exit(1);
         }
+        if (preg_match('/at\s+(.+)$/i', trim($mount), $matches)) {
+            $device['mountpoint'] = $matches[1];
+        }
     }
     $command = '';
-    if ($device['root']) {
-        $display = escapeshellarg(getenv('DISPLAY'));
-        $sshAuthSock = escapeshellarg(getenv('SSH_AUTH_SOCK'));
-        $unison = escapeshellarg("$home/.config/unison/root/$profilePath");
-        $xAuthority = escapeshellarg(getenv('XAUTHORITY'));
-        $command .= "pkexec env DISPLAY=$display ";
-        $command .= "SSH_AUTH_SOCK=$sshAuthSock XAUTHORITY=$xAuthority ";
-    } else {
-        $unison = escapeshellarg("$home/.config/unison/user/$profilePath");
-    }
-    $command .= "UNISON=$unison unison-gui " . getAdditionalArgs();
+    fscryptUnlock($device['mountpoint']);
+    manageBindMounts($device['mountpoint'], true);
+    $unison = escapeshellarg("$home/.config/unison/nixos/$profilePath");
+    $command = "UNISON=$unison unison-gui " . getAdditionalArgs();
     shell_exec($command);
+
+    $title = "--title='Sincronização Finalizada'";
+    $text = "--text='Deseja desmontar e ejetar o dispositivo com segurança?'";
+    exec("zenity --question $title $text", $output, $statusCode);
+
+    if ($statusCode !== 0) {
+        return;
+    }
+
+    manageBindMounts($device['mountpoint'], false);
     shell_exec("udisksctl unmount -b {$device['path']}");
     shell_exec("udisksctl power-off -b {$device['path']}");
     info('Device safely ejected. You can now remove it.');

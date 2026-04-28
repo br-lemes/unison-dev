@@ -3,17 +3,19 @@
     "language": "en,pt-br",
     "words": [
         "blockdevices",
+        "fscrypt",
         "GLOB_ONLYDIR",
+        "idmap",
         "libnotify",
         "linux",
         "mountpoint",
+        "nixos",
+        "NIXROOT",
         "pacman",
         "pkexec",
-        "policykit",
         "polkit",
         "udisks2",
         "udisksctl",
-        "XAUTHORITY",
         "zenity"
     ]
 }
