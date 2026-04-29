@@ -8,6 +8,9 @@ $password = '';
 function askPassword(): void
 {
     global $password;
+    if ($password !== '') {
+        return;
+    }
     $command =
         "zenity --password --title='Authentication' --text='Enter your password'";
     $result = shell_exec($command);
@@ -21,6 +24,7 @@ function askPassword(): void
 function sudoExec(string $command, string $input = ''): string|false
 {
     global $password;
+    askPassword();
     $fullCommand = "sudo -S $command";
     $descSpec = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
     $process = proc_open($fullCommand, $descSpec, $pipes);
@@ -211,7 +215,11 @@ function fscryptUnlock(): void
     if ($statusCode !== 0) {
         return;
     }
+    if (in_array('Unlocked: Yes', $output)) {
+        return;
+    }
 
+    askPassword();
     $command = "fscrypt unlock $targetDir";
     $descSpec = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
     $process = proc_open($command, $descSpec, $pipes);
@@ -286,7 +294,5 @@ if (count($devices) === 1) {
 } else {
     $device = chooseDevice($devices);
 }
-
-askPassword();
 
 unison($device);
