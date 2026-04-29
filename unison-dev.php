@@ -3,6 +3,38 @@
 declare(strict_types=1);
 
 $home = getenv('HOME');
+$password = '';
+
+function askPassword(): void
+{
+    global $password;
+    $command =
+        "zenity --password --title='Authentication' --text='Enter your password'";
+    $result = shell_exec($command);
+    if ($result === null || trim($result) === '') {
+        error('No password provided. Operation cancelled.');
+        exit(1);
+    }
+    $password = trim($result);
+}
+
+function sudoExec(string $command, string $input = ''): string|false
+{
+    global $password;
+    $fullCommand = "sudo -S $command";
+    $descSpec = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+    $process = proc_open($fullCommand, $descSpec, $pipes);
+    if (!is_resource($process)) {
+        return false;
+    }
+    fwrite($pipes[0], "$password\n$input");
+    fclose($pipes[0]);
+    $output = stream_get_contents($pipes[1]);
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    proc_close($process);
+    return $output;
+}
 
 function arrayToList(array $devices): string
 {
@@ -48,7 +80,7 @@ function getAdditionalArgs(): string
 
 function getDevices(): array
 {
-    $lsblk = shell_exec('lsblk -Jo LABEL,MODEL,MOUNTPOINT,NAME,PATH,SERIAL');
+    $lsblk = shell_exec('lsblk -Jo LABEL,MODEL,MOUNTPOINTS,NAME,PATH,SERIAL');
     if (!$lsblk) {
         return [];
     }
@@ -70,11 +102,11 @@ function getMatchingDevices(): array
             }
             if (isset($device['children'])) {
                 foreach ($device['children'] as $child) {
-                    if ($child['mountpoint'] === '/') {
+                    if (in_array('/', $child['mountpoints'])) {
                         continue;
                     }
                     if ($child['label'] === 'NIXROOT') {
-                        $profile['mountpoint'] = $child['mountpoint'];
+                        $profile['mountpoints'] = $child['mountpoints'];
                         $profile['path'] = $child['path'];
                         $result[] = $profile;
                     }
@@ -84,10 +116,10 @@ function getMatchingDevices(): array
             if ($device['label'] !== 'NIXROOT') {
                 continue;
             }
-            if ($device['mountpoint'] === '/') {
+            if (in_array('/', $device['mountpoints'])) {
                 continue;
             }
-            $profile['mountpoint'] = $device['mountpoint'];
+            $profile['mountpoints'] = $device['mountpoints'];
             $profile['path'] = $device['path'];
             $result[] = $profile;
         }
@@ -126,7 +158,15 @@ function notify(string $message): void
     shell_exec("notify-send $message");
 }
 
-function manageBindMounts(string $mountpoint, bool $mount): void
+function isMounted(string $path): bool
+{
+    $result = shell_exec(
+        'mountpoint -q ' . escapeshellarg($path) . ' && echo 1 || echo 0',
+    );
+    return trim($result) === '1';
+}
+
+function manageBindMounts(bool $mount): void
 {
     global $home;
     $pairs = [
@@ -135,8 +175,8 @@ function manageBindMounts(string $mountpoint, bool $mount): void
             "$home/src/system-connections/",
         ],
         [
-            rtrim($mountpoint, '/') . '/etc/NetworkManager/system-connections/',
-            rtrim($mountpoint, '/') . "$home/src/system-connections/",
+            '/mnt/etc/NetworkManager/system-connections/',
+            "/mnt$home/src/system-connections/",
         ],
     ];
 
@@ -145,27 +185,24 @@ function manageBindMounts(string $mountpoint, bool $mount): void
             continue;
         }
 
-        $isMounted = shell_exec(
-            'mountpoint -q ' . escapeshellarg($dst) . ' && echo 1 || echo 0',
-        );
-        if ($mount && trim($isMounted) === '0') {
-            shell_exec(
-                "pkexec mount --bind -o 'X-mount.idmap=b:0:1000:1' " .
+        if ($mount && !isMounted($dst)) {
+            sudoExec(
+                "mount --bind -o 'X-mount.idmap=b:0:1000:1' " .
                     escapeshellarg($src) .
                     ' ' .
                     escapeshellarg($dst),
             );
         }
-        if (!$mount && trim($isMounted) === '1') {
-            shell_exec('pkexec umount ' . escapeshellarg($dst));
+        if (!$mount && isMounted($dst)) {
+            sudoExec('umount ' . escapeshellarg($dst));
         }
     }
 }
 
-function fscryptUnlock(string $mountpoint)
+function fscryptUnlock(): void
 {
-    global $home;
-    $targetDir = rtrim($mountpoint, '/') . $home;
+    global $home, $password;
+    $targetDir = "/mnt$home";
     if (!is_dir($targetDir)) {
         return;
     }
@@ -175,27 +212,11 @@ function fscryptUnlock(string $mountpoint)
         return;
     }
 
-    $notUnlocked = "The directory $targetDir was not unlocked.";
-
-    $title = "--title='fscrypt Unlock'";
-    $message = "--text='Enter your password to unlock $targetDir'";
-    $command = "zenity --password $title $message";
-    $password = shell_exec($command);
-    if ($password === null) {
-        error($notUnlocked);
-        return;
-    }
-    $password = trim($password);
-    if ($password === '') {
-        error($notUnlocked);
-        return;
-    }
-
     $command = "fscrypt unlock $targetDir";
     $descSpec = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
     $process = proc_open($command, $descSpec, $pipes);
     if (!is_resource($process)) {
-        error($notUnlocked);
+        error("Failed to unlock $targetDir.");
         return;
     }
     fwrite($pipes[0], $password . "\n");
@@ -207,24 +228,34 @@ function fscryptUnlock(string $mountpoint)
     proc_close($process);
 }
 
+function mountDevice(string $path, array $mountpoints): void
+{
+    if (in_array('/mnt', $mountpoints)) {
+        return;
+    }
+    if (isMounted('/mnt')) {
+        error('/mnt is already in use by another device. Unmount it first.');
+        exit(1);
+    }
+    $path = escapeshellarg($path);
+    $result = sudoExec("mount $path /mnt");
+    if ($result === false) {
+        error('Failed to mount device at /mnt.');
+        exit(1);
+    }
+}
+
 function unison(array $device): void
 {
     global $home;
     $profilePath = "{$device['model']}/{$device['serial']}";
     notify($profilePath);
-    if ($device['mountpoint'] === null) {
-        $mount = shell_exec("udisksctl mount -b {$device['path']}");
-        if ($mount === false || $mount === null) {
-            error('Failed to mount device.');
-            exit(1);
-        }
-        if (preg_match('/at\s+(.+)$/i', trim($mount), $matches)) {
-            $device['mountpoint'] = $matches[1];
-        }
-    }
-    $command = '';
-    fscryptUnlock($device['mountpoint']);
-    manageBindMounts($device['mountpoint'], true);
+
+    mountDevice($device['path'], $device['mountpoints']);
+
+    fscryptUnlock();
+    manageBindMounts(true);
+
     $unison = escapeshellarg("$home/.config/unison/nixos/$profilePath");
     $command = "UNISON=$unison unison-gui " . getAdditionalArgs();
     shell_exec($command);
@@ -237,9 +268,9 @@ function unison(array $device): void
         return;
     }
 
-    manageBindMounts($device['mountpoint'], false);
-    shell_exec("udisksctl unmount -b {$device['path']}");
-    shell_exec("udisksctl power-off -b {$device['path']}");
+    manageBindMounts(false);
+    $path = escapeshellarg($device['path']);
+    sudoExec("umount --all-targets $path");
     info('Device safely ejected. You can now remove it.');
 }
 
@@ -255,5 +286,7 @@ if (count($devices) === 1) {
 } else {
     $device = chooseDevice($devices);
 }
+
+askPassword();
 
 unison($device);

@@ -8,6 +8,7 @@
         "libnotify",
         "linux",
         "mountpoint",
+        "mountpoints",
         "nixos",
         "NIXROOT",
         "pacman",
