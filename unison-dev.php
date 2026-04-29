@@ -20,9 +20,9 @@ function arrayToList(array $devices): string
 function chooseDevice(array $devices): array
 {
     $list = arrayToList($devices);
-    $column = '--column=ID --column=Modelo --column=Serial';
-    $title = '--title=Dispositivos';
-    $text = '--text="Selecione um dispositivo"';
+    $column = '--column=ID --column=Model --column=Serial';
+    $title = '--title=Devices';
+    $text = '--text="Select a device"';
     $command = "zenity --list $title $text $column $list";
     $output = shell_exec($command);
     if (!$output || !is_numeric($output) || !isset($devices[(int) $output])) {
@@ -175,10 +175,10 @@ function fscryptUnlock(string $mountpoint)
         return;
     }
 
-    $notUnlocked = "O diretório $targetDir não foi desbloqueado.";
+    $notUnlocked = "The directory $targetDir was not unlocked.";
 
-    $title = "--title='Desbloqueio fscrypt'";
-    $message = "--text='Insira sua senha para desbloquear $targetDir'";
+    $title = "--title='fscrypt Unlock'";
+    $message = "--text='Enter your password to unlock $targetDir'";
     $command = "zenity --password $title $message";
     $password = shell_exec($command);
     if ($password === null) {
@@ -229,8 +229,8 @@ function unison(array $device): void
     $command = "UNISON=$unison unison-gui " . getAdditionalArgs();
     shell_exec($command);
 
-    $title = "--title='Sincronização Finalizada'";
-    $text = "--text='Deseja desmontar e ejetar o dispositivo com segurança?'";
+    $title = "--title='Synchronization Complete'";
+    $text = "--text='Do you want to unmount and safely eject the device?'";
     exec("zenity --question $title $text", $output, $statusCode);
 
     if ($statusCode !== 0) {
